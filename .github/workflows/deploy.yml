@@ -1,0 +1,65 @@
+name: Build and Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: your-gcp-project-id
+  REGION: asia-southeast1
+  BACKEND_SERVICE: agri-fertilizer-backend
+  FRONTEND_SERVICE: agri-fertilizer-frontend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider' # Update this
+          service_account: 'my-service-account@your-gcp-project-id.iam.gserviceaccount.com' # Update this
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker to use gcloud as a credential helper
+        run: gcloud auth configure-docker $REGION-docker.pkg.dev
+
+      - name: Build and Push Backend Image
+        run: |
+          IMAGE_PATH=$REGION-docker.pkg.dev/$PROJECT_ID/my-repo/$BACKEND_SERVICE:${{ github.sha }}
+          docker build -t $IMAGE_PATH ./backend
+          docker push $IMAGE_PATH
+
+      - name: Deploy Backend to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.BACKEND_SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/my-repo/${{ env.BACKEND_SERVICE }}:${{ github.sha }}
+          env_vars: |
+            DATABASE_URL=postgresql+asyncpg://postgres:password@your-db-host:5432/fertilizer_db
+
+      - name: Build and Push Frontend Image
+        run: |
+          IMAGE_PATH=$REGION-docker.pkg.dev/$PROJECT_ID/my-repo/$FRONTEND_SERVICE:${{ github.sha }}
+          docker build -t $IMAGE_PATH ./frontend
+          docker push $IMAGE_PATH
+
+      - name: Deploy Frontend to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.FRONTEND_SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/my-repo/${{ env.FRONTEND_SERVICE }}:${{ github.sha }}
