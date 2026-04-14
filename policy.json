@@ -1,0 +1,22 @@
+[
+  {
+    "name": "keep-last-5-versions",
+    "action": {
+      "type": "Keep"
+    },
+    "condition": {
+      "tagState": "ANY",
+      "newerThan": "5d"
+    }
+  },
+  {
+    "name": "delete-older-than-5-days",
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "tagState": "ANY",
+      "olderThan": "5d"
+    }
+  }
+]

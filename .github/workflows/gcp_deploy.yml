@@ -1,0 +1,103 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: asia-southeast1 # Update this if your Artifact Registry/Cloud Run are in a different region
+  REPO_NAME: fertilizer-repo
+  BACKEND_SERVICE_NAME: backend-service
+  FRONTEND_SERVICE_NAME: frontend-service
+  CLOUDSQL_INSTANCE: ${{ secrets.CLOUDSQL_INSTANCE_CONNECTION_NAME }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    # Required for Workload Identity Federation authentication
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Authenticate using Workload Identity Federation (Recommended for security)
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          # Alternatively, if you want to use a JSON key instead of WIF, comment out the two lines above and uncomment the line below:
+          # credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker authentication
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # ==========================================
+      # 1. BUILD & DEPLOY BACKEND
+      # ==========================================
+      - name: Build Backend Image
+        working-directory: ./backend
+        run: |
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.BACKEND_SERVICE_NAME }}:${{ github.sha }} .
+
+      - name: Push Backend Image
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.BACKEND_SERVICE_NAME }}:${{ github.sha }}
+
+      - name: Deploy Backend to Cloud Run
+        id: deploy-backend
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.BACKEND_SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.BACKEND_SERVICE_NAME }}:${{ github.sha }}
+          env_vars: |
+            DATABASE_URL=postgresql+asyncpg://postgres:${{ secrets.DB_PASSWORD }}@/fertilizer_db?host=/cloudsql/${{ env.CLOUDSQL_INSTANCE }}
+            SECRET_KEY=${{ secrets.BACKEND_SECRET_KEY }}
+          flags: |
+            --add-cloudsql-instances=${{ env.CLOUDSQL_INSTANCE }}
+            --allow-unauthenticated
+
+      # ==========================================
+      # 2. BUILD & DEPLOY FRONTEND
+      # ==========================================
+      # We do this after the backend so we can inject the dynamic Backend URL into the Frontend build.
+      - name: Build Frontend Image
+        working-directory: ./frontend
+        run: |
+          docker build \
+            --build-arg VITE_API_BASE_URL="${{ steps.deploy-backend.outputs.url }}/api/v1" \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.FRONTEND_SERVICE_NAME }}:${{ github.sha }} .
+
+      - name: Push Frontend Image
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.FRONTEND_SERVICE_NAME }}:${{ github.sha }}
+
+      - name: Deploy Frontend to Cloud Run
+        id: deploy-frontend
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.FRONTEND_SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.FRONTEND_SERVICE_NAME }}:${{ github.sha }}
+          flags: '--allow-unauthenticated --port=80'
+
+      # ==========================================
+      # SUMMARY
+      # ==========================================
+      - name: Display Deployment URLs
+        run: |
+          echo "🎉 Deployment Successful!"
+          echo "🔗 Backend API URL: ${{ steps.deploy-backend.outputs.url }}"
+          echo "🔗 Frontend App URL: ${{ steps.deploy-frontend.outputs.url }}"
